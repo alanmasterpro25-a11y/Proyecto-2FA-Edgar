@@ -1,16 +1,24 @@
 /*
  * ============================================================
- *  ANALIZADOR LEXICO - DOCUMENTACION COMPLETA
- *  Lenguaje: PseudoCodigo Espanol v1.0
+ *  COMPILADOR - ANALIZADOR LEXICO INTERACTIVO
+ *  Escribe tu codigo y el compilador lo valida
  * ============================================================
- *  Compilar:  g++ -std=c++17 -o analizador_lexico analizador_lexico.cpp
- *  Ejecutar:  analizador_lexico.exe (Windows) / ./analizador_lexico (Linux)
+ *  Compilar:  g++ -std=c++17 -o compilador compilador.cpp
+ *  Ejecutar:  compilador.exe (Windows) / ./compilador (Linux)
+ *
+ *  Instrucciones:
+ *    - Escribe tu programa linea por linea
+ *    - Escribe FIN_ENTRADA para analizar
+ *    - Escribe SALIR para cerrar
  */
 
 #include <iostream>
-#include <iomanip>
+#include <sstream>
 #include <string>
 #include <vector>
+#include <unordered_set>
+#include <cctype>
+#include <iomanip>
 using namespace std;
 
 #define RESET   "\033[0m"
@@ -24,7 +32,198 @@ using namespace std;
 #define WHITE   "\033[1;37m"
 #define GRAY    "\033[0;37m"
 
-void limpiarPantalla() {
+// =============================================
+//  TIPOS DE TOKEN
+// =============================================
+enum class TipoToken {
+    PALABRA_RESERVADA, IDENTIFICADOR, ENTERO, DECIMAL,
+    CADENA, SIMBOLO, DESCONOCIDO, FIN_ARCHIVO
+};
+
+string tipoAString(TipoToken t){
+    switch(t){
+        case TipoToken::PALABRA_RESERVADA: return "PalRes";
+        case TipoToken::IDENTIFICADOR:     return "ID";
+        case TipoToken::ENTERO:            return "Entero";
+        case TipoToken::DECIMAL:           return "Decimal";
+        case TipoToken::CADENA:            return "Cadena";
+        case TipoToken::SIMBOLO:           return "Sim";
+        case TipoToken::DESCONOCIDO:       return "ERROR";
+        case TipoToken::FIN_ARCHIVO:       return "EOF";
+        default:                           return "?";
+    }
+}
+
+struct Token {
+    string    lexema;
+    TipoToken tipo;
+    string    valor;
+    int       columna;
+    int       renglon;
+};
+
+// =============================================
+//  PALABRAS RESERVADAS Y SIMBOLOS
+// =============================================
+const unordered_set<string> PALABRAS_RESERVADAS = {
+    "programa","inicio","fin","var","const",
+    "si","entonces","sino","mientras","hacer",
+    "contar","desde","hasta",
+    "entero","real","cadena","booleano",
+    "verdadero","falso","leer","escribir","limpiar"
+};
+
+const unordered_set<string> SIMBOLOS_DOBLES = {">=","<=","==","!="};
+const unordered_set<char> SIMBOLOS_SIMPLES  = {
+    '+','-','*','/','=','>','<',
+    '(',')','[',']','{','}',
+    ';',':',',','"','!'
+};
+
+// =============================================
+//  ANALIZADOR LEXICO
+// =============================================
+class AnalizadorLexico {
+private:
+    string fuente;
+    size_t pos;
+    int renglon, columna;
+
+    char actual()    { return pos<fuente.size() ? fuente[pos] : '\0'; }
+    char siguiente() { return pos+1<fuente.size() ? fuente[pos+1] : '\0'; }
+
+    void avanzar(){
+        if(pos<fuente.size()){
+            if(fuente[pos]=='\n'){ renglon++; columna=1; }
+            else columna++;
+            pos++;
+        }
+    }
+
+    void saltarEspacios(){
+        while(pos<fuente.size() && isspace((unsigned char)actual())) avanzar();
+        // comentarios //
+        if(actual()=='/' && siguiente()=='/'){
+            while(pos<fuente.size() && actual()!='\n') avanzar();
+            saltarEspacios();
+        }
+    }
+
+    Token leerIdentificador(){
+        int col=columna, ren=renglon;
+        string lex;
+        while(pos<fuente.size() &&
+              (isalpha((unsigned char)actual()) ||
+               isdigit((unsigned char)actual()) || actual()=='_')){
+            lex+=actual(); avanzar();
+        }
+        TipoToken tipo = PALABRAS_RESERVADAS.count(lex)
+                         ? TipoToken::PALABRA_RESERVADA
+                         : TipoToken::IDENTIFICADOR;
+        return {lex, tipo, "-", col, ren};
+    }
+
+    Token leerNumero(){
+        int col=columna, ren=renglon;
+        string lex;
+        if((actual()=='+'||actual()=='-') && isdigit((unsigned char)siguiente())){
+            if(tokens.empty() ||
+               tokens.back().tipo==TipoToken::SIMBOLO ||
+               tokens.back().tipo==TipoToken::PALABRA_RESERVADA){
+                lex+=actual(); avanzar();
+            }
+        }
+        while(pos<fuente.size() && isdigit((unsigned char)actual())){
+            lex+=actual(); avanzar();
+        }
+        if(actual()=='.' && isdigit((unsigned char)siguiente())){
+            lex+=actual(); avanzar();
+            while(pos<fuente.size() && isdigit((unsigned char)actual())){
+                lex+=actual(); avanzar();
+            }
+            return {lex, TipoToken::DECIMAL, "-", col, ren};
+        }
+        return {lex, TipoToken::ENTERO, "-", col, ren};
+    }
+
+    Token leerCadena(){
+        int col=columna, ren=renglon;
+        string lex="\"";
+        avanzar();
+        bool cerrada=false;
+        while(pos<fuente.size()){
+            char c=actual();
+            if(c=='\n') break;
+            if(c=='"'){ lex+=c; avanzar(); cerrada=true; break; }
+            lex+=c; avanzar();
+        }
+        if(!cerrada){
+            errores.push_back("  [ERROR] Cadena no cerrada en Col "+
+                              to_string(col)+", Ren "+to_string(ren));
+            return {lex, TipoToken::DESCONOCIDO, "-", col, ren};
+        }
+        return {lex, TipoToken::CADENA, "-", col, ren};
+    }
+
+    Token leerSimbolo(){
+        int col=columna, ren=renglon;
+        string doble; doble+=actual();
+        if(siguiente()!='\0') doble+=siguiente();
+        if(SIMBOLOS_DOBLES.count(doble)){
+            avanzar(); avanzar();
+            return {doble, TipoToken::SIMBOLO, "-", col, ren};
+        }
+        if(actual()=='!' && siguiente()!='='){
+            string lex(1,actual());
+            errores.push_back("  [ERROR] Simbolo '"+lex+"' no valido en Col "+
+                              to_string(col)+", Ren "+to_string(ren));
+            avanzar();
+            return {lex, TipoToken::DESCONOCIDO, "-", col, ren};
+        }
+        string simple(1,actual()); avanzar();
+        return {simple, TipoToken::SIMBOLO, "-", col, ren};
+    }
+
+public:
+    vector<Token>  tokens;
+    vector<string> errores;
+
+    AnalizadorLexico(const string& codigo)
+        : fuente(codigo), pos(0), renglon(1), columna(1) {}
+
+    void analizar(){
+        while(pos<fuente.size()){
+            saltarEspacios();
+            if(pos>=fuente.size()) break;
+            char c=actual();
+            if(isalpha((unsigned char)c)){
+                tokens.push_back(leerIdentificador());
+            } else if(isdigit((unsigned char)c)){
+                tokens.push_back(leerNumero());
+            } else if((c=='+'||c=='-') && isdigit((unsigned char)siguiente())){
+                tokens.push_back(leerNumero());
+            } else if(c=='"'){
+                tokens.push_back(leerCadena());
+            } else if(SIMBOLOS_SIMPLES.count(c)){
+                tokens.push_back(leerSimbolo());
+            } else {
+                int col=columna, ren=renglon;
+                string lex(1,c);
+                errores.push_back("  [ERROR] Id no valido '"+lex+
+                                  "' en Col "+to_string(col)+
+                                  ", Ren "+to_string(ren));
+                tokens.push_back({lex, TipoToken::DESCONOCIDO, "-", col, ren});
+                avanzar();
+            }
+        }
+        tokens.push_back({"EOF", TipoToken::FIN_ARCHIVO, "-", columna, renglon});
+    }
+};
+
+// =============================================
+//  PANTALLA
+// =============================================
+void limpiarPantalla(){
 #ifdef _WIN32
     system("cls");
 #else
@@ -32,317 +231,125 @@ void limpiarPantalla() {
 #endif
 }
 
-void pausar() {
-    cout << "\n" << GRAY << "  Presiona ENTER para continuar..." << RESET;
-    cin.ignore(); cin.get();
-}
-
-void sep(int n=62){ cout<<CYAN; for(int i=0;i<n;i++) cout<<'='; cout<<RESET<<"\n"; }
-void sepD(int n=62){ cout<<GRAY; for(int i=0;i<n;i++) cout<<'-'; cout<<RESET<<"\n"; }
-
-void titulo(const string& t){
-    sep();
-    int p=(62-(int)t.size())/2;
-    cout<<CYAN<<BOLD; for(int i=0;i<p;i++) cout<<" "; cout<<t<<RESET<<"\n";
-    sep();
-}
-
-// =============================================
-void mostrarPalabrasReservadas(){
-    titulo("PALABRAS RESERVADAS DEL LENGUAJE");
-    struct PR{string p,s;};
-    vector<PR> v={
-        {"programa",  "Define el cuerpo del programa principal"},
-        {"inicio",    "Marca el inicio de un bloque de codigo"},
-        {"fin",       "Marca el final de un bloque de codigo"},
-        {"var",       "Declaracion de variables"},
-        {"const",     "Declaracion de constantes"},
-        {"si",        "Estructura condicional (if)"},
-        {"entonces",  "Parte then del condicional"},
-        {"sino",      "Parte else del condicional"},
-        {"mientras",  "Ciclo while"},
-        {"hacer",     "Palabra auxiliar para ciclos"},
-        {"contar",    "Ciclo for"},
-        {"desde",     "Inicio del rango en for"},
-        {"hasta",     "Fin del rango en for"},
-        {"entero",    "Tipo de dato entero"},
-        {"real",      "Tipo de dato real/decimal"},
-        {"cadena",    "Tipo de dato string"},
-        {"booleano",  "Tipo de dato boolean"},
-        {"verdadero", "Valor booleano true"},
-        {"falso",     "Valor booleano false"},
-        {"leer",      "Funcion para leer entrada del teclado"},
-        {"escribir",  "Funcion para imprimir en pantalla"},
-        {"limpiar",   "Funcion para limpiar la pantalla"},
-    };
-    cout<<"\n"<<GREEN<<BOLD<<"  "<<left<<setw(14)<<"Palabra"<<"  Significado\n"<<RESET;
-    sepD();
-    for(auto& x:v) cout<<"  "<<YELLOW<<BOLD<<left<<setw(14)<<x.p<<RESET<<"  "<<x.s<<"\n";
-    sepD();
-    cout<<"\n  Total: "<<GREEN<<v.size()<<RESET<<" palabras reservadas\n";
-}
-
-void mostrarSimbolos(){
-    titulo("SIMBOLOS ESPECIALES");
-    struct S{string s,m;};
-    vector<S> v={
-        {"+","Operador de suma"},{"-","Operador de resta"},
-        {"*","Operador de multiplicacion"},{"/","Operador de division"},
-        {"=","Operador de asignacion"},{">","Mayor que"},{"<","Menor que"},
-        {">=","Mayor o igual que"},{"<=","Menor o igual que"},
-        {"==","Igualdad (comparacion)"},{"!=","Desigualdad"},
-        {"()","Parentesis para agrupacion"},{";","Separador de sentencias"},
-        {":","Declaracion de tipo"},{",","Separador de elementos"},
-        {"\"","Delimitador de cadenas"},
-    };
-    cout<<"\n"<<MAGENTA<<BOLD<<"  "<<left<<setw(10)<<"Simbolo"<<"  Significado\n"<<RESET;
-    sepD();
-    for(auto& x:v) cout<<"  "<<CYAN<<BOLD<<left<<setw(10)<<x.s<<RESET<<"  "<<x.m<<"\n";
-}
-
-void mostrarIdentificadores(){
-    titulo("ESPECIFICACION LEXICA: IDENTIFICADORES");
-    cout<<YELLOW<<BOLD<<"\n  Mini-Especificacion:\n"<<RESET;
-    cout<<"  Nombres para variables, constantes y elementos.\n";
-    cout<<"  Empiezan con letra, seguida de letras, digitos o '_'.\n";
-    cout<<YELLOW<<BOLD<<"\n  Reglas Lexicas:\n"<<RESET;
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Debe comenzar con letra (a-z, A-Z)\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Puede contener letras, digitos y guion bajo\n";
-    cout<<"  "<<RED<<"[NO]"<<RESET<<" No puede ser una palabra reservada\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Sensible a mayusculas y minusculas\n";
-    cout<<YELLOW<<BOLD<<"\n  Alfabeto:\n"<<RESET;
-    cout<<"  Sigma = { a-z, A-Z, 0-9, _ }\n";
-    cout<<YELLOW<<BOLD<<"\n  Expresion Regular:\n"<<RESET;
-    cout<<"  "<<MAGENTA<<"ID = [a-zA-Z][a-zA-Z0-9_]*\n"<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Automata Finito Determinista (AFD):\n"<<RESET;
-    cout<<"  Estado inicial: q0  |  Estados finales: { q1 }\n\n";
-    cout<<CYAN;
-    cout<<"       [a-zA-Z]              [a-zA-Z0-9_]\n";
-    cout<<"  q0 -----------> q1(final) <-----------+\n";
-    cout<<"                       |                |\n";
-    cout<<"                       +----------------+\n";
-    cout<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Transiciones:\n"<<RESET;
-    cout<<"  q0 --[a-zA-Z]------> q1\n";
-    cout<<"  q1 --[a-zA-Z0-9_]--> q1\n";
-    cout<<YELLOW<<BOLD<<"\n  Ejemplos validos:   "<<RESET<<GREEN<<"contador, valor_total, X, resultado123\n"<<RESET;
-    cout<<"  "<<YELLOW<<BOLD<<"Ejemplos invalidos: "<<RESET<<RED<<"123inicio, _variable, si (reservada)\n"<<RESET;
-}
-
-void mostrarCadenas(){
-    titulo("ESPECIFICACION LEXICA: CADENAS");
-    cout<<YELLOW<<BOLD<<"\n  Mini-Especificacion:\n"<<RESET;
-    cout<<"  Secuencias de caracteres entre comillas dobles.\n";
-    cout<<YELLOW<<BOLD<<"\n  Reglas Lexicas:\n"<<RESET;
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Comienzan y terminan con comillas dobles (\")\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Pueden contener letras, digitos, espacios\n";
-    cout<<"  "<<RED<<"[NO]"<<RESET<<" No pueden contener saltos de linea\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Las comillas internas deben escaparse\n";
-    cout<<YELLOW<<BOLD<<"\n  Expresion Regular:\n"<<RESET;
-    cout<<"  "<<MAGENTA<<"CADENA = \"[^\"\\n]*\"\n"<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Automata Finito Determinista (AFD):\n"<<RESET;
-    cout<<"  Estado inicial: q0  |  Estados finales: { q2 }\n\n";
-    cout<<CYAN;
-    cout<<"       [\"]        [^\"]         [\"]\n";
-    cout<<"  q0 ------> q1 ---------> q1 ------> q2(final)\n";
-    cout<<"                  ^________|\n";
-    cout<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Transiciones:\n"<<RESET;
-    cout<<"  q0 --[\"]-->  q1\n";
-    cout<<"  q1 --[^\"]-->  q1\n";
-    cout<<"  q1 --[\"]-->  q2\n";
-    cout<<YELLOW<<BOLD<<"\n  Ejemplos validos:   "<<RESET<<GREEN<<"\"Hola mundo\", \"123\", \"Valor: 45.7\"\n"<<RESET;
-    cout<<"  "<<YELLOW<<BOLD<<"Ejemplos invalidos: "<<RESET<<RED<<"'texto', \"sin cerrar\n"<<RESET;
-}
-
-void mostrarNumeros(){
-    titulo("ESPECIFICACION LEXICA: NUMEROS ENTEROS");
-    cout<<YELLOW<<BOLD<<"\n  Reglas Lexicas:\n"<<RESET;
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Secuencia de uno o mas digitos\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Pueden comenzar con signo opcional (+ o -)\n";
-    cout<<"  "<<RED<<"[NO]"<<RESET<<" No contienen punto decimal\n";
-    cout<<"  "<<RED<<"[NO]"<<RESET<<" No se permiten ceros iniciales (excepto 0)\n";
-    cout<<YELLOW<<BOLD<<"\n  Expresion Regular:\n"<<RESET;
-    cout<<"  "<<MAGENTA<<"ENTERO = [+-]?[0-9]+\n"<<RESET;
-    cout<<"  "<<MAGENTA<<"ENTERO (sin ceros) = [+-]?(0|[1-9][0-9]*)\n"<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Automata Finito Determinista (AFD):\n"<<RESET;
-    cout<<"  Estado inicial: q0  |  Estados finales: { q2 }\n\n";
-    cout<<CYAN;
-    cout<<"       [+-]       [0-9]         [0-9]\n";
-    cout<<"  q0 ------> q1 -------> q2 <---------+\n";
-    cout<<"   |                     |             |\n";
-    cout<<"   +----[0-9]----------->+             |\n";
-    cout<<"                         +-------------+\n";
-    cout<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Transiciones:\n"<<RESET;
-    cout<<"  q0 --[+-]-->  q1\n  q0 --[0-9]--> q2\n";
-    cout<<"  q1 --[0-9]--> q2\n  q2 --[0-9]--> q2\n";
-    cout<<YELLOW<<BOLD<<"\n  Ejemplos validos:   "<<RESET<<GREEN<<"0, 123, -45, +789, 1000\n"<<RESET;
-    cout<<"  "<<YELLOW<<BOLD<<"Ejemplos invalidos: "<<RESET<<RED<<"01234, 12.5, +, -\n"<<RESET;
-
-    sepD();
-    cout<<CYAN<<BOLD<<"\n  NUMEROS DECIMALES\n"<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Reglas Lexicas:\n"<<RESET;
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Parte entera + punto + parte fraccionaria\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Ambas partes necesitan al menos un digito\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Pueden comenzar con signo (+ o -)\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" El punto decimal es obligatorio\n";
-    cout<<YELLOW<<BOLD<<"\n  Expresion Regular:\n"<<RESET;
-    cout<<"  "<<MAGENTA<<"DECIMAL = [+-]?[0-9]+\\.[0-9]+\n"<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Automata Finito Determinista (AFD):\n"<<RESET;
-    cout<<"  Estado inicial: q0  |  Estados finales: { q4 }\n\n";
-    cout<<CYAN;
-    cout<<"  q0--[+-]-->q1--[0-9]-->q2--[.]-->q3--[0-9]-->q4\n";
-    cout<<"  q0--[0-9]------------>q2              q4--[0-9]-->q4\n";
-    cout<<"  q2--[0-9]------------>q2\n";
-    cout<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Transiciones:\n"<<RESET;
-    cout<<"  q0--[+-]-->q1  q0--[0-9]-->q2  q1--[0-9]-->q2\n";
-    cout<<"  q2--[0-9]-->q2  q2--[.]-->q3  q3--[0-9]-->q4  q4--[0-9]-->q4\n";
-    cout<<YELLOW<<BOLD<<"\n  Ejemplos validos:   "<<RESET<<GREEN<<"3.14, -0.5, +123.456, 0.0\n"<<RESET;
-    cout<<"  "<<YELLOW<<BOLD<<"Ejemplos invalidos: "<<RESET<<RED<<".5, 123., 12..5, 3.14.15\n"<<RESET;
-}
-
-void mostrarPalabrasReservadasEspec(){
-    titulo("RECONOCIMIENTO DE PALABRAS RESERVADAS");
-    cout<<YELLOW<<BOLD<<"\n  Reconocimiento:\n"<<RESET;
-    cout<<"  El analizador lexico identifica primero un identificador\n";
-    cout<<"  y luego verifica si es palabra reservada con tabla hash.\n";
-    cout<<YELLOW<<BOLD<<"\n  Reglas Lexicas:\n"<<RESET;
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Siguen las mismas reglas que los identificadores\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Son palabras predefinidas del lenguaje\n";
-    cout<<"  "<<GREEN<<"[OK]"<<RESET<<" Generalmente en minusculas\n";
-    cout<<"  "<<RED<<"[NO]"<<RESET<<" No pueden ser redefinidas por el usuario\n";
-    cout<<YELLOW<<BOLD<<"\n  Algoritmo:\n"<<RESET;
-    cout<<CYAN;
-    cout<<"  +------------------------------------------+\n";
-    cout<<"  | 1. Leer cadena [a-zA-Z][a-zA-Z0-9_]*    |\n";
-    cout<<"  | 2. Buscar en tabla de palabras reservadas|\n";
-    cout<<"  |    Si encontrada -> token: PalRes        |\n";
-    cout<<"  |    Si no         -> token: ID            |\n";
-    cout<<"  +------------------------------------------+\n";
-    cout<<RESET;
-    cout<<YELLOW<<BOLD<<"\n  Expresion Regular:\n"<<RESET;
-    cout<<MAGENTA;
-    cout<<"  programa|inicio|fin|var|const|si|entonces|\n";
-    cout<<"  sino|mientras|hacer|contar|desde|hasta|   \n";
-    cout<<"  entero|real|cadena|booleano|verdadero|    \n";
-    cout<<"  falso|leer|escribir|limpiar               \n";
+void imprimirEncabezado(){
+    cout<<CYAN<<BOLD;
+    cout<<"  +------------------------------------------------------------+\n";
+    cout<<"  |        COMPILADOR - ANALIZADOR LEXICO INTERACTIVO         |\n";
+    cout<<"  |      Lenguaje PseudoCodigo Espanol  |  Version 1.0        |\n";
+    cout<<"  +------------------------------------------------------------+\n";
     cout<<RESET;
 }
 
-void mostrarEjemploTokens(){
-    titulo("EJEMPLO: ANALISIS PROGRAMA DEL PIZARRON");
-    cout<<YELLOW<<BOLD<<"\n  Codigo fuente:\n"<<RESET<<GRAY;
-    cout<<"  +-----------------------------------+\n";
-    cout<<"  | inicio                            |\n";
-    cout<<"  |     entero x;                     |\n";
-    cout<<"  |     entero y;                     |\n";
-    cout<<"  |     x = 8;                        |\n";
-    cout<<"  |     y = 2;                        |\n";
-    cout<<"  |     suma = x + y;                 |\n";
-    cout<<"  |     escribir(suma);               |\n";
-    cout<<"  | fin                               |\n";
-    cout<<"  +-----------------------------------+\n"<<RESET;
-
-    struct Tok{string l,t;int c,r;};
-    vector<Tok> tb={
-        {"inicio","PalRes",1,1},{"entero","PalRes",5,2},{"x","ID",12,2},{";","Sim",13,2},
-        {"entero","PalRes",5,3},{"y","ID",12,3},{";","Sim",13,3},
-        {"x","ID",5,4},{"=","Sim",7,4},{"8","Entero",9,4},{";","Sim",10,4},
-        {"y","ID",5,5},{"=","Sim",7,5},{"2","Entero",9,5},{";","Sim",10,5},
-        {"suma","ID",5,6},{"=","Sim",10,6},{"x","ID",12,6},{"+","Sim",14,6},
-        {"y","ID",16,6},{";","Sim",17,6},
-        {"escribir","PalRes",5,7},{"(","Sim",13,7},{"suma","ID",14,7},
-        {")","Sim",18,7},{";","Sim",19,7},{"fin","PalRes",1,8},
-    };
-
+void imprimirTabla(const vector<Token>& tokens){
     cout<<"\n"<<GREEN<<BOLD;
     cout<<"  +------------------+--------------+-------+--------+\n";
     cout<<"  | Lexema           | Tipo         |  Col  |  Ren   |\n";
-    cout<<"  +------------------+--------------+-------+--------+\n"<<RESET;
+    cout<<"  +------------------+--------------+-------+--------+\n";
+    cout<<RESET;
 
-    for(auto& t:tb){
-        string c=RESET;
-        if(t.t=="PalRes") c=BLUE;
-        else if(t.t=="ID") c=GREEN;
-        else if(t.t=="Entero") c=MAGENTA;
-        else if(t.t=="Sim") c=GRAY;
-        cout<<"  | "<<c<<left<<setw(16)<<t.l<<RESET
-            <<" | "<<c<<left<<setw(12)<<t.t<<RESET
-            <<" | "<<right<<setw(5)<<t.c
-            <<" | "<<right<<setw(6)<<t.r<<" |\n";
+    for(const auto& t: tokens){
+        if(t.tipo==TipoToken::FIN_ARCHIVO) break;
+        string color=RESET;
+        if(t.tipo==TipoToken::PALABRA_RESERVADA) color=BLUE;
+        else if(t.tipo==TipoToken::IDENTIFICADOR) color=GREEN;
+        else if(t.tipo==TipoToken::ENTERO||t.tipo==TipoToken::DECIMAL) color=MAGENTA;
+        else if(t.tipo==TipoToken::CADENA) color=YELLOW;
+        else if(t.tipo==TipoToken::SIMBOLO) color=GRAY;
+        else if(t.tipo==TipoToken::DESCONOCIDO) color=RED;
+
+        cout<<"  | "<<color<<left<<setw(16)<<t.lexema<<RESET
+            <<" | "<<color<<left<<setw(12)<<tipoAString(t.tipo)<<RESET
+            <<" | "<<right<<setw(5)<<t.columna
+            <<" | "<<right<<setw(6)<<t.renglon<<" |\n";
     }
     cout<<GREEN<<"  +------------------+--------------+-------+--------+\n"<<RESET;
-    cout<<"\n  "<<GREEN<<"[OK] PROGRAMA VALIDO - Sin errores lexicos\n"<<RESET;
-
-    sepD();
-    cout<<RED<<BOLD<<"\n  Ejemplo con ERRORES (como en el pizarron):\n"<<RESET<<GRAY;
-    cout<<"  inicio\n";
-    cout<<"      entero x#;    <- # invalido Col 14, Ren 2\n";
-    cout<<"      @y = 2;       <- @ invalido Col 5,  Ren 3\n";
-    cout<<"  fin\n"<<RESET;
-    cout<<RED<<BOLD<<"\n  Errores reportados:\n"<<RESET<<RED;
-    cout<<"  [ERROR] Id no valido '#' en Col 14, Ren 2\n";
-    cout<<"  [ERROR] Id no valido '@' en Col 5,  Ren 3\n"<<RESET;
 }
 
-void mostrarMenu(){
-    cout<<"\n"<<CYAN<<BOLD;
-    cout<<"  +--------------------------------------------+\n";
-    cout<<"  |      ESPECIFICACION LEXICA COMPLETA        |\n";
-    cout<<"  +--------------------------------------------+\n";
-    cout<<"  |  1. Palabras Reservadas                    |\n";
-    cout<<"  |  2. Simbolos Especiales                    |\n";
-    cout<<"  |  3. Identificadores (AFD + Regex)          |\n";
-    cout<<"  |  4. Cadenas (AFD + Regex)                  |\n";
-    cout<<"  |  5. Numeros Enteros y Decimales (AFD)      |\n";
-    cout<<"  |  6. Reconocimiento de Pal. Reservadas      |\n";
-    cout<<"  |  7. Ejemplo Completo de Tokens             |\n";
-    cout<<"  |  8. Mostrar TODO                           |\n";
-    cout<<"  |  0. Salir                                  |\n";
-    cout<<"  +--------------------------------------------+\n"<<RESET;
-    cout<<"\n  "<<WHITE<<"Opcion: "<<RESET;
+void imprimirResumen(const vector<Token>& tokens, const vector<string>& errores){
+    int palRes=0,ids=0,nums=0,cads=0,sims=0,errs=0;
+    for(const auto& t: tokens){
+        if(t.tipo==TipoToken::FIN_ARCHIVO) break;
+        if(t.tipo==TipoToken::PALABRA_RESERVADA) palRes++;
+        else if(t.tipo==TipoToken::IDENTIFICADOR) ids++;
+        else if(t.tipo==TipoToken::ENTERO||t.tipo==TipoToken::DECIMAL) nums++;
+        else if(t.tipo==TipoToken::CADENA) cads++;
+        else if(t.tipo==TipoToken::SIMBOLO) sims++;
+        else if(t.tipo==TipoToken::DESCONOCIDO) errs++;
+    }
+    cout<<"\n"<<CYAN<<"  -- RESUMEN --------------------------------------------------"<<RESET<<"\n";
+    cout<<"  "<<BLUE   <<"Pal. Reservadas : "<<palRes<<RESET<<"\n";
+    cout<<"  "<<GREEN  <<"Identificadores : "<<ids<<RESET<<"\n";
+    cout<<"  "<<MAGENTA<<"Numeros         : "<<nums<<RESET<<"\n";
+    cout<<"  "<<YELLOW <<"Cadenas         : "<<cads<<RESET<<"\n";
+    cout<<"  "<<GRAY   <<"Simbolos        : "<<sims<<RESET<<"\n";
+    cout<<"  "<<RED    <<"Tokens invalidos: "<<errs<<RESET<<"\n";
+
+    if(errores.empty()){
+        cout<<"\n  "<<GREEN<<BOLD<<"[OK] PROGRAMA VALIDO - Sin errores lexicos"<<RESET<<"\n";
+    } else {
+        cout<<"\n"<<RED<<BOLD<<"  -- ERRORES LEXICOS ------------------------------------------"<<RESET<<"\n";
+        for(const auto& e: errores)
+            cout<<RED<<e<<RESET<<"\n";
+    }
+    cout<<"\n";
 }
 
+// =============================================
+//  MAIN
+// =============================================
 int main(){
     #ifdef _WIN32
         system("chcp 65001 > nul");
     #endif
-    limpiarPantalla();
-    cout<<CYAN<<BOLD;
-    cout<<"  +------------------------------------------------------------+\n";
-    cout<<"  |       ANALIZADOR LEXICO - DOCUMENTACION COMPLETA          |\n";
-    cout<<"  |         Lenguaje PseudoCodigo Espanol v1.0                |\n";
-    cout<<"  +------------------------------------------------------------+\n";
-    cout<<RESET;
 
-    int op;
-    do{
-        mostrarMenu();
-        cin>>op; cin.ignore();
-        limpiarPantalla();
-        switch(op){
-            case 1: mostrarPalabrasReservadas();      pausar(); break;
-            case 2: mostrarSimbolos();                pausar(); break;
-            case 3: mostrarIdentificadores();         pausar(); break;
-            case 4: mostrarCadenas();                 pausar(); break;
-            case 5: mostrarNumeros();                 pausar(); break;
-            case 6: mostrarPalabrasReservadasEspec(); pausar(); break;
-            case 7: mostrarEjemploTokens();           pausar(); break;
-            case 8:
-                mostrarPalabrasReservadas();      pausar(); limpiarPantalla();
-                mostrarSimbolos();                pausar(); limpiarPantalla();
-                mostrarIdentificadores();         pausar(); limpiarPantalla();
-                mostrarCadenas();                 pausar(); limpiarPantalla();
-                mostrarNumeros();                 pausar(); limpiarPantalla();
-                mostrarPalabrasReservadasEspec(); pausar(); limpiarPantalla();
-                mostrarEjemploTokens();           pausar();
-                break;
-            case 0: cout<<"\n"<<CYAN<<"  Hasta luego!\n\n"<<RESET; break;
-            default: cout<<RED<<"\n  Opcion no valida.\n"<<RESET; pausar();
+    limpiarPantalla();
+    imprimirEncabezado();
+
+    cout<<"\n"<<WHITE<<BOLD<<"  Instrucciones:\n"<<RESET;
+    cout<<"  - Escribe tu programa linea por linea\n";
+    cout<<"  - Escribe "<<YELLOW<<"FIN_ENTRADA"<<RESET<<" para analizar el codigo\n";
+    cout<<"  - Escribe "<<YELLOW<<"SALIR"<<RESET<<" para cerrar el programa\n\n";
+
+    while(true){
+        cout<<CYAN<<"  ============================================================\n"<<RESET;
+        cout<<GRAY<<"  (escribe tu codigo, luego FIN_ENTRADA)\n\n"<<RESET;
+
+        string codigoCompleto, linea;
+        int numLinea=1;
+
+        while(true){
+            cout<<GREEN<<BOLD<<setw(3)<<numLinea<<" | "<<RESET;
+            getline(cin, linea);
+            if(linea=="FIN_ENTRADA") break;
+            if(linea=="SALIR"){
+                cout<<"\n"<<CYAN<<"  Hasta luego!\n\n"<<RESET;
+                return 0;
+            }
+            codigoCompleto+=linea+"\n";
+            numLinea++;
         }
-        if(op!=0) limpiarPantalla();
-    }while(op!=0);
+
+        if(codigoCompleto.empty()){
+            cout<<RED<<"  No escribiste ningun codigo.\n\n"<<RESET;
+            continue;
+        }
+
+        cout<<"\n"<<CYAN<<"  -- ANALISIS LEXICO ------------------------------------------\n"<<RESET;
+
+        AnalizadorLexico lexico(codigoCompleto);
+        lexico.analizar();
+        imprimirTabla(lexico.tokens);
+        imprimirResumen(lexico.tokens, lexico.errores);
+
+        cout<<WHITE<<"  Analizar otro programa? (s/n): "<<RESET;
+        char resp; cin>>resp; cin.ignore();
+        if(resp=='n'||resp=='N'){
+            cout<<"\n"<<CYAN<<"  Hasta luego!\n\n"<<RESET;
+            break;
+        }
+        limpiarPantalla();
+        imprimirEncabezado();
+        cout<<"\n";
+    }
     return 0;
 }
