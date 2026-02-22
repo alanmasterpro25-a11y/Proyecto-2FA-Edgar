@@ -121,7 +121,7 @@ private:
             lex += c; avanzar();
         }
         if (!cerrada) {
-            errores.push_back("[ERROR] Cadena no cerrada en Col " +
+            errores.push_back("Error: Cadena no cerrada en Col " +
                               to_string(col) + ", Ren " + to_string(ren));
             return { lex, TipoToken::DESCONOCIDO, col, ren };
         }
@@ -139,7 +139,7 @@ private:
         }
         if (actual() == '!' && siguiente() != '=') {
             string lex(1, actual());
-            errores.push_back("[ERROR] Simbolo '" + lex + "' no valido en Col " +
+            errores.push_back("Error: Simbolo '" + lex + "' no valido en Col " +
                               to_string(col) + ", Ren " + to_string(ren));
             avanzar();
             return { lex, TipoToken::DESCONOCIDO, col, ren };
@@ -169,7 +169,7 @@ public:
             else {
                 int col = columna, ren = renglon;
                 string lex(1, c);
-                errores.push_back("[ERROR] Caracter no valido '" + lex +
+                errores.push_back("Error: Caracter no valido '" + lex +
                                   "' en Col " + to_string(col) + ", Ren " + to_string(ren));
                 tokens.push_back({ lex, TipoToken::DESCONOCIDO, col, ren });
                 avanzar();
@@ -221,7 +221,7 @@ void imprimirResumen(const vector<Token>& tokens, const vector<string>& errores)
     cout << "Tokens invalidos    : " << errs   << "\n";
 
     if (errores.empty()) {
-        cout << "\n[OK] Programa valido. Sin errores lexicos.\n";
+        cout << "\n Programa valido. Sin errores lexicos\n";
     } else {
         cout << "\nERRORES LEXICOS\n";
         for (const auto& e : errores) cout << e << "\n";
