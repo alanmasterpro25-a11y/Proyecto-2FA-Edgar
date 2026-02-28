@@ -1,4 +1,5 @@
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <unordered_set>
@@ -6,9 +7,25 @@
 #include <iomanip>
 using namespace std;
 
+// ─────────────────────────────────────────────
+//  TIPOS DE TOKEN
+// ─────────────────────────────────────────────
 enum class TipoToken {
-    PALABRA_RESERVADA, IDENTIFICADOR, ENTERO, DECIMAL,
-    CADENA, SIMBOLO, DESCONOCIDO, FIN_ARCHIVO
+    PALABRA_RESERVADA,
+    IDENTIFICADOR,
+    ENTERO,
+    DECIMAL,
+    CADENA,
+    // Símbolos clasificados
+    SIM_ARITMETICO,   // + - * / %
+    SIM_RELACIONAL,   // > < >= <= == !=
+    SIM_ASIGNACION,   // = += -= *= /=
+    SIM_LOGICO,       // && || !
+    SIM_AGRUPACION,   // ( ) [ ] { }
+    SIM_PUNTUACION,   // ; : , .
+    // Errores
+    DESCONOCIDO,
+    FIN_ARCHIVO
 };
 
 string tipoAString(TipoToken t) {
@@ -18,13 +35,21 @@ string tipoAString(TipoToken t) {
         case TipoToken::ENTERO:            return "Entero";
         case TipoToken::DECIMAL:           return "Decimal";
         case TipoToken::CADENA:            return "Cadena";
-        case TipoToken::SIMBOLO:           return "Sim";
+        case TipoToken::SIM_ARITMETICO:    return "Aritm";
+        case TipoToken::SIM_RELACIONAL:    return "Relac";
+        case TipoToken::SIM_ASIGNACION:    return "Asign";
+        case TipoToken::SIM_LOGICO:        return "Logic";
+        case TipoToken::SIM_AGRUPACION:    return "Agrup";
+        case TipoToken::SIM_PUNTUACION:    return "Punct";
         case TipoToken::DESCONOCIDO:       return "ERROR";
         case TipoToken::FIN_ARCHIVO:       return "EOF";
         default:                           return "?";
     }
 }
 
+// ─────────────────────────────────────────────
+//  ESTRUCTURA TOKEN
+// ─────────────────────────────────────────────
 struct Token {
     string    lexema;
     TipoToken tipo;
@@ -32,6 +57,9 @@ struct Token {
     int       renglon;
 };
 
+// ─────────────────────────────────────────────
+//  PALABRAS RESERVADAS
+// ─────────────────────────────────────────────
 const unordered_set<string> PALABRAS_RESERVADAS = {
     "programa", "inicio", "fin", "var", "const",
     "si", "entonces", "sino", "mientras", "hacer",
@@ -40,13 +68,37 @@ const unordered_set<string> PALABRAS_RESERVADAS = {
     "verdadero", "falso", "leer", "escribir", "limpiar"
 };
 
-const unordered_set<string> SIMBOLOS_DOBLES = { ">=", "<=", "==", "!=" };
-const unordered_set<char>   SIMBOLOS_SIMPLES = {
-    '+', '-', '*', '/', '=', '>', '<',
-    '(', ')', '[', ']', '{', '}',
-    ';', ':', ',', '"', '!'
+// ─────────────────────────────────────────────
+//  TABLAS DE SÍMBOLOS
+// ─────────────────────────────────────────────
+
+// Símbolos de 3 caracteres (asignación compuesta)
+const unordered_set<string> SIMBOLOS_TRIPLES = {
+    // (ninguno por ahora, reservado para extensión)
 };
 
+// Símbolos de 2 caracteres
+const unordered_set<string> SIMBOLOS_DOBLES_REL   = { ">=", "<=", "==", "!=" };
+const unordered_set<string> SIMBOLOS_DOBLES_ASIGN = { "+=", "-=", "*=", "/=" };
+const unordered_set<string> SIMBOLOS_DOBLES_LOG   = { "&&", "||" };
+
+// Símbolos de 1 carácter
+// aritméticos
+const unordered_set<char> SIM_ARIT  = { '+', '-', '*', '/', '%' };
+// relacionales simples
+const unordered_set<char> SIM_REL   = { '>', '<' };
+// asignación simple
+const unordered_set<char> SIM_ASIGN = { '=' };
+// lógico simple
+const unordered_set<char> SIM_LOG   = { '!' };
+// agrupación
+const unordered_set<char> SIM_AGRUP = { '(', ')', '[', ']', '{', '}' };
+// puntuación
+const unordered_set<char> SIM_PUNCT = { ';', ':', ',', '.' };
+
+// ─────────────────────────────────────────────
+//  ANALIZADOR LÉXICO
+// ─────────────────────────────────────────────
 class AnalizadorLexico {
 private:
     string fuente;
@@ -66,18 +118,33 @@ private:
 
     void saltarEspacios() {
         while (pos < fuente.size() && isspace((unsigned char)actual())) avanzar();
+        // Comentarios de línea //
         if (actual() == '/' && siguiente() == '/') {
             while (pos < fuente.size() && actual() != '\n') avanzar();
             saltarEspacios();
         }
+        // Comentarios de bloque /* ... */
+        if (actual() == '/' && siguiente() == '*') {
+            avanzar(); avanzar(); // consume /*
+            while (pos + 1 < fuente.size()) {
+                if (actual() == '*' && siguiente() == '/') {
+                    avanzar(); avanzar(); // consume */
+                    break;
+                }
+                avanzar();
+            }
+            saltarEspacios();
+        }
     }
 
+    // ── FIX "1Inicio": leer identificador solo si empieza con letra o _
     Token leerIdentificador() {
         int col = columna, ren = renglon;
         string lex;
         while (pos < fuente.size() &&
                (isalpha((unsigned char)actual()) ||
-                isdigit((unsigned char)actual()) || actual() == '_')) {
+                isdigit((unsigned char)actual()) ||
+                actual() == '_')) {
             lex += actual(); avanzar();
         }
         TipoToken tipo = PALABRAS_RESERVADAS.count(lex)
@@ -89,16 +156,41 @@ private:
     Token leerNumero() {
         int col = columna, ren = renglon;
         string lex;
+
+        // Signo unario solo si el contexto lo permite
         if ((actual() == '+' || actual() == '-') && isdigit((unsigned char)siguiente())) {
             if (tokens.empty() ||
-                tokens.back().tipo == TipoToken::SIMBOLO ||
+                tokens.back().tipo == TipoToken::SIM_ARITMETICO   ||
+                tokens.back().tipo == TipoToken::SIM_RELACIONAL    ||
+                tokens.back().tipo == TipoToken::SIM_ASIGNACION    ||
+                tokens.back().tipo == TipoToken::SIM_AGRUPACION    ||
                 tokens.back().tipo == TipoToken::PALABRA_RESERVADA) {
                 lex += actual(); avanzar();
             }
         }
+
         while (pos < fuente.size() && isdigit((unsigned char)actual())) {
             lex += actual(); avanzar();
         }
+
+        // ── FIX "1Inicio": si después del número sigue una letra, es error
+        if (pos < fuente.size() && isalpha((unsigned char)actual())) {
+            // consumir el resto como parte del lexema inválido
+            string resto;
+            while (pos < fuente.size() &&
+                   (isalpha((unsigned char)actual()) ||
+                    isdigit((unsigned char)actual()) ||
+                    actual() == '_')) {
+                resto += actual(); avanzar();
+            }
+            errores.push_back(
+                "Error: Identificador invalido '" + lex + resto +
+                "' (no puede comenzar con digito) en Col " +
+                to_string(col) + ", Ren " + to_string(ren));
+            return { lex + resto, TipoToken::DESCONOCIDO, col, ren };
+        }
+
+        // Número decimal
         if (actual() == '.' && isdigit((unsigned char)siguiente())) {
             lex += actual(); avanzar();
             while (pos < fuente.size() && isdigit((unsigned char)actual())) {
@@ -106,6 +198,7 @@ private:
             }
             return { lex, TipoToken::DECIMAL, col, ren };
         }
+
         return { lex, TipoToken::ENTERO, col, ren };
     }
 
@@ -117,42 +210,86 @@ private:
         while (pos < fuente.size()) {
             char c = actual();
             if (c == '\n') break;
+            if (c == '\\') { // escape básico
+                lex += c; avanzar();
+                if (pos < fuente.size()) { lex += actual(); avanzar(); }
+                continue;
+            }
             if (c == '"') { lex += c; avanzar(); cerrada = true; break; }
             lex += c; avanzar();
         }
         if (!cerrada) {
-            errores.push_back("Error: Cadena no cerrada en Col " +
-                              to_string(col) + ", Ren " + to_string(ren));
+            errores.push_back(
+                "Error: Cadena no cerrada en Col " +
+                to_string(col) + ", Ren " + to_string(ren));
             return { lex, TipoToken::DESCONOCIDO, col, ren };
         }
         return { lex, TipoToken::CADENA, col, ren };
     }
 
+    // Determinar el tipo de un símbolo ya formado
+    TipoToken clasificarSimbolo(const string& s) {
+        // Dobles
+        if (SIMBOLOS_DOBLES_REL.count(s))   return TipoToken::SIM_RELACIONAL;
+        if (SIMBOLOS_DOBLES_ASIGN.count(s)) return TipoToken::SIM_ASIGNACION;
+        if (SIMBOLOS_DOBLES_LOG.count(s))   return TipoToken::SIM_LOGICO;
+        // Simples (s tiene 1 char)
+        if (s.size() == 1) {
+            char c = s[0];
+            if (SIM_ARIT.count(c))  return TipoToken::SIM_ARITMETICO;
+            if (SIM_REL.count(c))   return TipoToken::SIM_RELACIONAL;
+            if (SIM_ASIGN.count(c)) return TipoToken::SIM_ASIGNACION;
+            if (SIM_LOG.count(c))   return TipoToken::SIM_LOGICO;
+            if (SIM_AGRUP.count(c)) return TipoToken::SIM_AGRUPACION;
+            if (SIM_PUNCT.count(c)) return TipoToken::SIM_PUNTUACION;
+        }
+        return TipoToken::DESCONOCIDO;
+    }
+
     Token leerSimbolo() {
         int col = columna, ren = renglon;
-        string doble;
-        doble += actual();
-        if (siguiente() != '\0') doble += siguiente();
-        if (SIMBOLOS_DOBLES.count(doble)) {
-            avanzar(); avanzar();
-            return { doble, TipoToken::SIMBOLO, col, ren };
+
+        // Intentar doble (2 chars)
+        if (pos + 1 < fuente.size()) {
+            string doble;
+            doble += actual();
+            doble += siguiente();
+            if (SIMBOLOS_DOBLES_REL.count(doble)   ||
+                SIMBOLOS_DOBLES_ASIGN.count(doble)  ||
+                SIMBOLOS_DOBLES_LOG.count(doble)) {
+                avanzar(); avanzar();
+                return { doble, clasificarSimbolo(doble), col, ren };
+            }
         }
+
+        // '!' sin '=' es inválido
         if (actual() == '!' && siguiente() != '=') {
             string lex(1, actual());
-            errores.push_back("Error: Simbolo '" + lex + "' no valido en Col " +
-                              to_string(col) + ", Ren " + to_string(ren));
+            errores.push_back(
+                "Error: Simbolo '" + lex +
+                "' no valido (esperaba '!=') en Col " +
+                to_string(col) + ", Ren " + to_string(ren));
             avanzar();
             return { lex, TipoToken::DESCONOCIDO, col, ren };
         }
+
         string simple(1, actual()); avanzar();
-        return { simple, TipoToken::SIMBOLO, col, ren };
+        return { simple, clasificarSimbolo(simple), col, ren };
+    }
+
+    // ── ¿Es el carácter el inicio de un símbolo válido?
+    bool esSimbolo(char c) {
+        return SIM_ARIT.count(c)  || SIM_REL.count(c)   ||
+               SIM_ASIGN.count(c) || SIM_LOG.count(c)   ||
+               SIM_AGRUP.count(c) || SIM_PUNCT.count(c) ||
+               c == '"';
     }
 
 public:
     vector<Token>  tokens;
     vector<string> errores;
 
-    AnalizadorLexico(const string& codigo)
+    explicit AnalizadorLexico(const string& codigo)
         : fuente(codigo), pos(0), renglon(1), columna(1) {}
 
     void analizar() {
@@ -161,16 +298,38 @@ public:
             if (pos >= fuente.size()) break;
             char c = actual();
 
-            if      (isalpha((unsigned char)c))                                      tokens.push_back(leerIdentificador());
-            else if (isdigit((unsigned char)c))                                      tokens.push_back(leerNumero());
-            else if ((c == '+' || c == '-') && isdigit((unsigned char)siguiente()))  tokens.push_back(leerNumero());
-            else if (c == '"')                                                        tokens.push_back(leerCadena());
-            else if (SIMBOLOS_SIMPLES.count(c))                                      tokens.push_back(leerSimbolo());
+            if (isalpha((unsigned char)c) || c == '_') {
+                // Identificador o palabra reservada
+                tokens.push_back(leerIdentificador());
+            }
+            else if (isdigit((unsigned char)c)) {
+                // Número (nunca puede ser signo aquí sin contexto)
+                tokens.push_back(leerNumero());
+            }
+            else if ((c == '+' || c == '-') &&
+                     isdigit((unsigned char)siguiente()) &&
+                     (tokens.empty() ||
+                      tokens.back().tipo == TipoToken::SIM_ASIGNACION  ||
+                      tokens.back().tipo == TipoToken::SIM_ARITMETICO  ||
+                      tokens.back().tipo == TipoToken::SIM_RELACIONAL  ||
+                      tokens.back().tipo == TipoToken::SIM_AGRUPACION  ||
+                      tokens.back().tipo == TipoToken::PALABRA_RESERVADA)) {
+                // Signo unario antes de número
+                tokens.push_back(leerNumero());
+            }
+            else if (c == '"') {
+                tokens.push_back(leerCadena());
+            }
+            else if (esSimbolo(c)) {
+                tokens.push_back(leerSimbolo());
+            }
             else {
                 int col = columna, ren = renglon;
                 string lex(1, c);
-                errores.push_back("Error: Caracter no valido '" + lex +
-                                  "' en Col " + to_string(col) + ", Ren " + to_string(ren));
+                errores.push_back(
+                    "Error: Caracter no valido '" + lex +
+                    "' en Col " + to_string(col) +
+                    ", Ren " + to_string(ren));
                 tokens.push_back({ lex, TipoToken::DESCONOCIDO, col, ren });
                 avanzar();
             }
@@ -179,83 +338,170 @@ public:
     }
 };
 
+// ─────────────────────────────────────────────
+//  IMPRESIÓN
+// ─────────────────────────────────────────────
 void imprimirTabla(const vector<Token>& tokens) {
     cout << "\nTABLA DE TOKENS\n";
-    cout << string(51, '-') << "\n";
+    cout << string(58, '-') << "\n";
     cout << left
          << setw(20) << "Lexema"
-         << setw(15) << "Tipo"
-         << setw(8)  << "Col"
-         << setw(8)  << "Renglon"
+         << setw(10) << "Tipo"
+         << setw(20) << "Categoria"
+         << setw(6)  << "Col"
+         << setw(6)  << "Ren"
          << "\n";
-    cout << string(51, '-') << "\n";
+    cout << string(58, '-') << "\n";
+
     for (const auto& t : tokens) {
         if (t.tipo == TipoToken::FIN_ARCHIVO) break;
         cout << left
              << setw(20) << t.lexema
-             << setw(15) << tipoAString(t.tipo)
-             << setw(8)  << t.columna
-             << setw(8)  << t.renglon
+             << setw(10) << tipoAString(t.tipo)
+             << setw(20) << ""   // espacio extra si se quiere categoría extra
+             << setw(6)  << t.columna
+             << setw(6)  << t.renglon
              << "\n";
     }
-    cout << string(51, '-') << "\n";
+    cout << string(58, '-') << "\n";
 }
 
 void imprimirResumen(const vector<Token>& tokens, const vector<string>& errores) {
-    int palRes = 0, ids = 0, nums = 0, cads = 0, sims = 0, errs = 0;
+    int palRes=0, ids=0, ents=0, decs=0, cads=0;
+    int arits=0, rels=0, asigns=0, logs=0, agrs=0, puncts=0, errs=0;
+
     for (const auto& t : tokens) {
         if (t.tipo == TipoToken::FIN_ARCHIVO) break;
-        if      (t.tipo == TipoToken::PALABRA_RESERVADA)                       palRes++;
-        else if (t.tipo == TipoToken::IDENTIFICADOR)                           ids++;
-        else if (t.tipo == TipoToken::ENTERO || t.tipo == TipoToken::DECIMAL)  nums++;
-        else if (t.tipo == TipoToken::CADENA)                                  cads++;
-        else if (t.tipo == TipoToken::SIMBOLO)                                 sims++;
-        else if (t.tipo == TipoToken::DESCONOCIDO)                             errs++;
+        switch (t.tipo) {
+            case TipoToken::PALABRA_RESERVADA: palRes++;  break;
+            case TipoToken::IDENTIFICADOR:     ids++;     break;
+            case TipoToken::ENTERO:            ents++;    break;
+            case TipoToken::DECIMAL:           decs++;    break;
+            case TipoToken::CADENA:            cads++;    break;
+            case TipoToken::SIM_ARITMETICO:    arits++;   break;
+            case TipoToken::SIM_RELACIONAL:    rels++;    break;
+            case TipoToken::SIM_ASIGNACION:    asigns++;  break;
+            case TipoToken::SIM_LOGICO:        logs++;    break;
+            case TipoToken::SIM_AGRUPACION:    agrs++;    break;
+            case TipoToken::SIM_PUNTUACION:    puncts++;  break;
+            case TipoToken::DESCONOCIDO:       errs++;    break;
+            default: break;
+        }
     }
+
     cout << "\nRESUMEN\n";
-    cout << "Palabras reservadas : " << palRes << "\n";
-    cout << "Identificadores     : " << ids    << "\n";
-    cout << "Numeros             : " << nums   << "\n";
-    cout << "Cadenas             : " << cads   << "\n";
-    cout << "Simbolos            : " << sims   << "\n";
-    cout << "Tokens invalidos    : " << errs   << "\n";
+    cout << string(35, '-') << "\n";
+    cout << left << setw(28) << "Palabras reservadas"    << palRes  << "\n";
+    cout << left << setw(28) << "Identificadores"        << ids     << "\n";
+    cout << left << setw(28) << "Enteros"                << ents    << "\n";
+    cout << left << setw(28) << "Decimales"              << decs    << "\n";
+    cout << left << setw(28) << "Cadenas"                << cads    << "\n";
+    cout << left << setw(28) << "Sim. aritmeticos"       << arits   << "\n";
+    cout << left << setw(28) << "Sim. relacionales"      << rels    << "\n";
+    cout << left << setw(28) << "Sim. asignacion"        << asigns  << "\n";
+    cout << left << setw(28) << "Sim. logicos"           << logs    << "\n";
+    cout << left << setw(28) << "Sim. agrupacion"        << agrs    << "\n";
+    cout << left << setw(28) << "Sim. puntuacion"        << puncts  << "\n";
+    cout << left << setw(28) << "Tokens invalidos"       << errs    << "\n";
+    cout << string(35, '-') << "\n";
 
     if (errores.empty()) {
-        cout << "\n Programa valido. Sin errores lexicos\n";
+        cout << "\n Programa valido. Sin errores lexicos.\n";
     } else {
-        cout << "\nERRORES LEXICOS\n";
-        for (const auto& e : errores) cout << e << "\n";
+        cout << "\nERRORES LEXICOS (" << errores.size() << ")\n";
+        for (const auto& e : errores) cout << "  " << e << "\n";
     }
     cout << "\n";
 }
 
-int main() {
-    #ifdef _WIN32
-        system("chcp 65001 > nul");
-    #endif
+// ─────────────────────────────────────────────
+//  LEER DESDE ARCHIVO
+// ─────────────────────────────────────────────
+string leerArchivo(const string& ruta) {
+    ifstream f(ruta);
+    if (!f.is_open()) {
+        cerr << "Error: No se pudo abrir el archivo '" << ruta << "'\n";
+        return "";
+    }
+    return string(
+        (istreambuf_iterator<char>(f)),
+        istreambuf_iterator<char>()
+    );
+}
 
-    cout << "ANALIZADOR LEXICO - PSEUDOCODIGO ESPANOL\n";
-    cout << "Escribe fin para analizar | salir para cerrar\n\n";
+// ─────────────────────────────────────────────
+//  MODO CONSOLA (entrada manual)
+// ─────────────────────────────────────────────
+string leerConsola() {
+    string codigoCompleto, linea;
+    int numLinea = 1;
+    cout << "Escribe el codigo (escribe 'fin' para analizar, 'salir' para cerrar):\n\n";
+    while (true) {
+        cout << setw(3) << numLinea << " | ";
+        getline(cin, linea);
+        if (linea == "fin")   break;
+        if (linea == "salir") return "";
+        codigoCompleto += linea + "\n";
+        numLinea++;
+    }
+    return codigoCompleto;
+}
+
+// ─────────────────────────────────────────────
+//  MAIN
+// ─────────────────────────────────────────────
+int main(int argc, char* argv[]) {
+#ifdef _WIN32
+    system("chcp 65001 > nul");
+#endif
+
+    cout << "╔══════════════════════════════════════════╗\n";
+    cout << "║  ANALIZADOR LEXICO - PSEUDOCODIGO ESP.   ║\n";
+    cout << "╚══════════════════════════════════════════╝\n\n";
+
+    // ── Modo archivo: ./analizador archivo.txt
+    if (argc >= 2) {
+        string codigo = leerArchivo(argv[1]);
+        if (codigo.empty()) return 1;
+
+        cout << "Analizando archivo: " << argv[1] << "\n";
+        AnalizadorLexico lexico(codigo);
+        lexico.analizar();
+        imprimirTabla(lexico.tokens);
+        imprimirResumen(lexico.tokens, lexico.errores);
+        return 0;
+    }
+
+    // ── Modo interactivo (consola)
+    cout << "Modos disponibles:\n";
+    cout << "  [1] Ingresar codigo manualmente\n";
+    cout << "  [2] Leer desde archivo\n";
+    cout << "  [0] Salir\n\n";
 
     while (true) {
-        string codigoCompleto, linea;
-        int numLinea = 1;
+        cout << "Opcion: ";
+        char op; cin >> op; cin.ignore();
 
-        while (true) {
-            cout << setw(3) << numLinea << " | ";
-            getline(cin, linea);
-            if (linea == "fin") break;
-            if (linea == "salir") return 0;
-            codigoCompleto += linea + "\n";
-            numLinea++;
+        if (op == '0') break;
+
+        string codigo;
+
+        if (op == '1') {
+            cout << "\n";
+            codigo = leerConsola();
+            if (codigo.empty()) { cout << "Saliendo...\n"; break; }
+        }
+        else if (op == '2') {
+            cout << "Ruta del archivo: ";
+            string ruta; getline(cin, ruta);
+            codigo = leerArchivo(ruta);
+            if (codigo.empty()) { cout << "\n"; continue; }
+        }
+        else {
+            cout << "Opcion no valida.\n\n"; continue;
         }
 
-        if (codigoCompleto.empty()) {
-            cout << "No se ingreso codigo.\n\n";
-            continue;
-        }
-
-        AnalizadorLexico lexico(codigoCompleto);
+        AnalizadorLexico lexico(codigo);
         lexico.analizar();
         imprimirTabla(lexico.tokens);
         imprimirResumen(lexico.tokens, lexico.errores);
@@ -265,5 +511,6 @@ int main() {
         if (resp == 'n' || resp == 'N') break;
         cout << "\n";
     }
+
     return 0;
 }
